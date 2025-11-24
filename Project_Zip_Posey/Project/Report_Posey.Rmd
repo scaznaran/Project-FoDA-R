@@ -1,0 +1,870 @@
+---
+title: "Understanding Flight Delays in America: A Data-Driven Review of 2019–2020"
+author: "Sofia Posey"
+date: "2025-11-20"
+output:
+  html_notebook:
+    theme:
+      version: 4
+      bg: '#E0F7FA'
+      fg: '#1a1a1a'
+      primary: '#6b2e1a'
+      base_font:
+        google: Autour One
+      heading_font:
+        google: Rubik Mono One
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+## Summary
+
+This project analyzes flight delays in the United States using a cleaned sample of 3,343 records from 2019 and 2020. This data was originally sourced from a Kaggle dataset based on the U.S. Department of Transportation. The study groups flights by airline, state, and delay cause in order to distinguish delays that are mostly systemic in the National Aviation System (NAS) from those that are more closely tied to airline operations. Using summary statistics, circle packing plots, bar charts, maps, and boxplots, the analysis compares traffic volume, total delay minutes, and the distribution of delay causes across airlines and states.
+
+Overall, the results show that states with heavy traffic, such as California, Texas and Florida, also experience the largest totals of delayed flights, while low traffic states like West Virginia, Vermont, and Wyoming have fewer delays. However, some patterns indicate that more flights do not automatically mean more delays; for example Envoy Air has the highest number of flights in the data set but not the highest number of long delays, while Southwest Airlines records fewer flights but more delays of at least 15 minutes. In California, Texas, and West Virginia, most delay minutes come from late-arriving aircraft and carrier-related issues rather than weather or security.
+
+## Purpose
+
+The purpose of this project is to examine patterns of flight delays in the U.S. air travel system using 2019–2020 data from the Department of Transportation (via Kaggle). Rather than simply counting how many flights were late, the analysis focuses on how delays vary across airlines, states, and causes (carrier, NAS, weather, late aircraft, and security). By breaking delays down in this way, the project aims to distinguish problems that are largely systemic, such as traffic congestion in the NAS, from those that are more closely tied to individual carriers’ operations and scheduling decisions.
+
+More specifically, the project seeks to answer the following questions:
+
+- Which airlines and states in this sample experience the highest totals of delayed flights and delay minutes?
+- How strongly are delays related to traffic volume (number of flights) at the state or airline level?
+- For states of interest, what proportion of total delay minutes is explained by carrier issues, late aircraft, NAS constraints, weather, and security?
+- How do delay patterns change between 2019 and 2020, a period with major disruptions to air travel?
+
+Answering these questions provides an initial evidence base for understanding where delays are most concentrated and which types of causes contribute the most to nationwide disruption.
+
+
+# Introduction
+
+Flight delays commonly happen through the U.S. air travel system: they frustrate travelers, disrupt airline schedules and crew rotations, and congest airport gates, all of this problems add real costs to carriers and airports. Studying delay causes, like carrier, NAS, weather, late-arriving aircraft, security, patterns over time, airport locations, and carriers, helps identify which problems are systemic (such as air traffic control or airport congestion) versus operator-specific (such as airline scheduling). This evidence base supports better planning by airlines and airports, and informs policy aimed at reducing nationwide disruptions (Bureau of Transportation Statistics, 2021).
+
+In the U.S., a large proportion of delays is attributed to the NAS. The NAS refers to the nationwide network of airspace, this variable covers operations like air traffic control services, airport facilities, navigation equipment, procedures, and the people and technology that run them. Delays categorized as NAS include “non-extreme weather conditions, airport operations, heavy traffic volume, and air traffic control” (Bureau of Transportation Statistics, 2024). NAS related issues covers heavy traffic volume, airspace flow programs, or equipment outages. Also note that flights can be delayed even when an individual airline did everything right.This analysis explores why flights get delayed grouping data by airline, location, and terminal, all of this, based on data from the 2019–2020 U.S. internal flight records; the focus of this project is on spotting trends across carriers and hubs. 
+
+# Data
+
+The original data used in this project comes from a Kaggle dataset. The author of that dataset reports that the underlying information was retrieved from the United States Department of Transportation.
+
+
+```{r}
+#Library
+library(libr)
+library(tidyverse)
+library(ggplot2)
+library(packcircles)
+library(usmap)
+library(ggrepel)
+library(scales)
+library(forcats)
+```
+### Data Loading 
+The original data set have 3351 rows by 21 columns.
+
+```{r}
+airlines <- read.csv("airline_delay.csv")
+```
+
+```{r}
+dim(airlines)
+```
+
+## Key Variables and Structure
+
+For better understanding, this data set contains aggregated flight records for 2019–2020, with each row corresponding to a specific carrier–airport–time combination. One key variable is `arr_del15`, which counts the number of flights that arrived at least 15 minutes late. A set of variables ending in `_ct` (such as `carrier_ct`, `weather_ct`, `nas_ct`, `security_ct`, and `late_aircraft_ct`) are stored as floats and represent the percentage of `arr_del15` flights. Another important variable is `arr_delay`, an integer field that represents the total arrival delay (in minutes), which can be understood as the sum of the delay minutes across the five cause-specific variables: `carrier_delay`, `weather_delay`, `nas_delay`, `security_delay`, and `late_aircraft_delay`. The variables `arr_flights`, `arr_cancelled`, and `arr_diverted` are treated as independent counts, but will not take part in this project's analysis process. Further more, the number of flights arrived will be interpreted as the number of "on-time" flights recorded for a given carrier at a given airport.
+
+# Cleaning
+
+The cleaning process focused on retaining only complete, well-identified U.S. flight records and making the location information in a standardized format. First, all observations containing missing values fields were identified and removed. Next, the original airport descriptor, which combined city, state abbreviation, and airport name into a single text string, was divided into three separate variables representing city, state, and airport name by splitting on punctuation marks. Finally, state abbreviations were standardized to a consistent format, and observations were filtered so that only records associated with valid U.S. states and the District of Columbia were retained.
+
+```{r}
+#Identify NA values
+airlines[is.na(airlines$arr_flights), ]
+```
+
+```{r}
+nona_airlines <- na.omit(airlines) #getting rid of NA rows
+
+#getting City and State from Airport name
+clean_airlines <- separate(
+  nona_airlines,
+  airport_name,
+  c("city", "abbr", "airport_name"),
+  ",\\s*|:\\s*"
+  
+)
+
+```
+
+```{r}
+#keep only 51 states
+valid <- c(state.abb, "DC")
+clean_airlines <- clean_airlines %>%
+  mutate(abbr = toupper(abbr)) %>%
+  filter(abbr %in% valid)
+```
+
+### Final Data Dimensions
+
+Based on the previous cleaning description. The final clean data frame has 3303 rows by 23 columns.
+
+```{r}
+dim(clean_airlines)
+```
+
+# Dictionary
+
+For this section, variable descriptions were obtained from the Kaggle documentation associated with this dataset. One exception is the variable arr_flights, which was not clearly defined in the original source. Based on documentation from the U.S. Department of Transportation, arr_flights is interpreted in this project as the number of "on-time" arriving flights recorded at each airport–carrier combination.
+
+```{r}
+#creatng a table dictionary with libr
+airlines_dictionary <- dictionary(clean_airlines)
+
+```
+
+```{r}
+#adding each variable description
+airlines_dictionary$Description <- c(
+  "Year data collected",
+  "Month data collected",
+  "Airline carrier",
+  "Carrier name",
+  "Airport code",
+  "Airport's city",
+  "Airport's state",
+  "Name of the airport",
+  "Number of on time flights arriving at airport",
+  "Total Number of flights more than 15 minutes late",
+  "Percent of flights delayed due to air carrier (e.g. no crew)",
+  "Percent of flights due to weather",
+  "Percent of flights delayed due to National Aviation System (e.g. heavy air traffic)",
+  "Percent of flights canceled due to a security breach",
+  "Percent of flights delayed as a result of another flight on the same aircraft delayed",
+  "Number of cancelled flights",
+  "Number of flights that were diverted",
+  "Sum of Total time (minutes) of delayed flight",
+  "Total time (minutes) of delay due to air carrier",
+  "Total time (minutes) of delay due to inclement weather",
+  "Total time (minutes) of delay due to National Aviation System",
+  "Total time (minutes) of delay as a result of a security issue",
+  "Total time (minutes) of delay flights as a result of a previous flight on the same airplane being late"
+)
+
+```
+
+```{r}
+#getting rid of null columns of the dictionary table
+airlines_dictionary$Label <- NULL
+airlines_dictionary$Format <- NULL
+airlines_dictionary$Width <- NULL
+airlines_dictionary$Justify <- NULL
+airlines_dictionary$Name <- NULL
+names(airlines_dictionary)[names(airlines_dictionary) == "Column"] <- "Variable"
+```
+
+```{r}
+#printing dictionary table
+airlines_dictionary
+```
+
+
+
+# Exploratory Data Analysis
+
+## Summary Statistics
+
+The summary statistics table shows that the first eight variables describe general characteristics of each observation, such as airport and carrier information, while the remaining variables are quantitative measures of flight performance. The first quantitative variable, of arrived flights present a minimum value of 1, which means that all carriers had at least 1 on-time flight, while another carrier recorded 19,713 on-time flights. This maximum value appears to be an outlier, since both the mean and median are much closer to 100 than to 10,000, which suggests a highly right-skewed distribution.
+Another variable that stands out is the security caused that is expressed in a percentage value from the total number of flights with a delay of at least 15 minutes. For this variable, both the mean and median are equal to zero. This indicates that, for most airports and carriers in the sample, there were no delays attributed to security. Any positive values from a the security cause are therefore relatively rare and likely concentrated in a small number of airports or time periods.On the other hand the variable with the highest value in this data set is NAS delays, which suggests that the longest delays for this data set is attributed to NAS operations.
+
+```{r}
+summary(clean_airlines)
+
+```
+
+
+# Summary Statistics by State
+
+In order to better visualize this numerical data. The following table reports a summary statistics for arrival delay minutes by state for the 2019–2020 period, including the mean, standard deviation, minimum, and maximum delay. The state with the longest average total delay is New Jersey (NJ), with 14249 minutes of delayed flights. While the shortest average delay state is Montana (MT) with a an average of 586 minutes in delays.
+
+```{r}
+stat_airlines <- clean_airlines %>%
+  summarise(
+    mean_airline = mean(arr_delay),
+    sd_airline = sd(arr_delay),
+    min_airline = min(arr_delay),
+    max_airline = max(arr_delay),
+    .by = abbr
+  )
+arrange(stat_airlines, mean_airline)
+```
+
+### Box plot Distribution of delayed time by State
+
+To better compare states with both typical and extreme delays, a logarithmic scale was applied to the delay variable. This compresses the distance to very large values and makes the overall distribution easier to see. The boxplot of flight delay minutes by state (top 10, log scale) highlights the middle 50% of the data while reducing the visual influence of extreme outliers.
+
+The graph focuses on the ten states with the largest total delay minutes. New Jersey (NJ). Massachusetts (MA) have the highest means throught the U.S clearly have the largest medians and generally higher boxes, meaning airports there tend to accumulate much more total delay time than the others. The log scale indicate a few extreme outliers above 100,000 minutes (especially in Minnesota (MN) and a couple of others). This would mean that a small number of airports are responsible for enormous amounts of delay time. Many of the medians sit closer to the bottom of the boxes with long upper boxes, which indicates right-skewed distributions: most airports are in the “moderately bad” range, but a few are really, really bad.
+
+
+```{r}
+
+df_box <- clean_airlines %>%
+  mutate(total_delay = pmax(
+    carrier_delay + weather_delay + nas_delay + security_delay + late_aircraft_delay,
+    0
+  ))
+```
+
+```{r}
+top_states <- df_box %>%
+  group_by(abbr) %>% summarise(med = median(total_delay, na.rm = TRUE)) %>%
+  slice_max(med, n = 10, with_ties = FALSE) %>% pull(abbr)
+
+```
+
+```{r}
+top_box <- df_box %>%
+  filter(abbr %in% top_states) %>%
+  mutate(abbr = forcats::fct_reorder(abbr, total_delay, .fun = median, .desc = TRUE)) %>%
+  ggplot(aes(x = abbr, y = total_delay, fill = abbr)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10(labels = scales::comma) +
+  labs(x = "State", y = "Total Delay (minutes, log10)",
+       title = "Flight Delay Minutes by State (Top 10, log scale)") +
+  theme_minimal() + theme(legend.position = "none",
+                          axis.text.x = element_text(angle = 45, hjust = 1))
+top_box
+
+```
+
+
+
+
+The second boxplot shows the 10 states with the fewest flight records. As before, each colored box represents the distribution of total delay minutes per flight on a log scale. Where West Virginia (WV), Maine (ME), Mississippi (MS) and Vermont (VT) have especially low medians and relatively compact boxes, suggesting smaller and more consistently low delay totals. Because the y-axis is on a log10 scale, even small vertical differences could represent large percentages changes in total delay. However, there is still some overlap between the upper end of the “best” states and the lower end of the “worst” states, so ranking by state is not absolute.
+
+
+```{r}
+#Bottom 10 graph
+df_box <- clean_airlines %>%
+  mutate(total_delay = pmax(
+    carrier_delay + weather_delay + nas_delay + security_delay + late_aircraft_delay,
+    0
+  ))
+
+
+bottom_states <- df_box %>%
+  count(abbr, sort = TRUE) %>%
+  slice_min(n, n = 10, with_ties = FALSE) %>%
+  pull(abbr)
+
+
+df_box %>%
+  filter(abbr %in% bottom_states) %>%
+  mutate(abbr = fct_reorder(abbr, total_delay, .fun = median)) %>%
+  ggplot(aes(x = abbr, y = total_delay, fill = abbr)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10(labels = comma) +
+  labs(
+    title = "Flight Delay Minutes by State (Bottom 10, log scale)",
+    x = "State",
+    y = "Total Delay (minutes, log10)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Airlines Tables
+
+For further understanding about the data in this project is relevant to present some information about the carriers of this data set. The first table works as a reference for the commercial names of the airlines and their abbreviations used throughout this analysis. In total, the dataset includes 17 airlines operating within the United States.
+
+
+```{r}
+airline_code <- clean_airlines %>%
+  distinct(carrier_name, carrier) %>%
+  arrange(carrier_name, carrier)
+
+airline_code
+```
+
+The second table summarizes the total number of flights operated by each airline between 2019 and 2020. Among the carriers in this sample, Hawaiian Airlines Inc. has the fewest recorded flights, with 36, while Envoy Air has the most, with 285 flights over the period.
+
+```{r}
+airlines_count <- table(clean_airlines$carrier_name)
+airlines_count
+```
+
+
+## Airline Circle Packing (2019–2020)
+
+This graph shows a circle packing visualization of the number of flights recorded for each airline in 2019–2020. In it, each circle represents one airline, and the area of the circle is proportional to the total number of flights in the dataset. Colors distinguish individual carriers, and the two-letter abbreviations are shown inside each circle, with the full names listed in the legend.
+
+Comparing this figure to the previous summary table, we can see that Hawaiian Airlines Inc. has the smallest circle, confirming that it operated the fewest flights in this sample. In contrast, SkyWest Airlines Inc. has the largest circle, reflecting the highest total number of flights. This visualization is useful for quickly identifying airlines of particular interest for the rest of the report, since it highlights which carriers account for most of the observed flight activity and delays.
+
+```{r}
+#Creating Circle Stack Graph of Airlines
+counts <- clean_airlines %>%
+  count(carrier, name = "value") %>%
+  left_join(airline_code, by = "carrier")
+
+
+packing <- circleProgressiveLayout(counts$value, sizetype = "area")
+
+
+dat <- counts %>%
+  mutate(id = dplyr::row_number()) %>% 
+  bind_cols(packing)
+
+
+dat_vertices <- circleLayoutVertices(packing, npoints = 50) %>%
+  left_join(dat %>% select(id, carrier), by = "id")
+
+#  Legend labels:
+labs <- setNames(paste(dat$carrier, "—", dat$carrier_name), dat$carrier)
+
+# Plot
+ggplot() +
+  geom_polygon(
+    data = dat_vertices,
+    aes(x, y, group = id, fill = carrier),
+    colour = "black", alpha = 0.6
+  ) +
+  geom_text(
+    data = dat,
+    aes(x, y, label = carrier, size = value),
+    color = "black"
+  ) +
+  scale_size_continuous(range = c(3, 8), guide = "none") +
+  scale_fill_discrete(name = "Airline", labels = labs) +
+  theme_void() +
+  labs(
+    title = "Airline Circle Packing (2019–2020)",
+    subtitle = "Area -> number of flights",
+    caption = "Source: Bureau of Transportation"
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "darkgreen", hjust = 0.5),
+    plot.subtitle = element_text(face = "bold", color = "#addd8e", hjust = 0.1),
+    panel.background = element_rect(fill = "#f7fcb9"),
+    plot.background = element_rect(fill = "#f7fcb9")
+  ) +
+  coord_equal()
+
+```
+
+
+## Flights by State
+
+This table reports the number of flight records per state in the 2019–2020 sample. The most frequently represented states are Texas, California, Florida, and New York, each with more than 150 observations. At the other end of the distribution, West Virginia, Vermont, and New Hampshire appear the least often, with fewer than 20 recorded flights. These counts reflect how often each state appears in this data set, not necessarily total real-world traffic, but they highlight where most of the analyzed activity is concentrated.
+
+```{r}
+
+table(clean_airlines$abbr)
+```
+
+
+## Delays by Carrier
+
+The bar chart displays the number of flights delayed by at least 15 minutes for each airline during 2019–2020. Hawaiian Airlines Inc. has the fewest delays, while Southwest Airlines Co. has the largest number of delayed flights in this category.
+
+Comparing this figure to the earlier table of total flights by airline, Envoy Air operates the most flights overall, but appears only around the middle of the distribution for delays of 15 minutes or more. In contrast, Southwest Airlines has roughly half as many flights as Envoy Air yet records the highest number of delays. This comparison suggests that there is no simple one-to-one relationship between the number of flights an airline operates and the number of delays it experiences; other factors, such as scheduling practices, hub congestion, or network structure, likely play a role.
+
+```{r}
+df_delay <- clean_airlines %>%
+  group_by(carrier_name) %>%
+  summarise(delayed_flights = sum(arr_del15, na.rm = TRUE), .groups = "drop")
+
+ggplot(df_delay,
+       aes(x = reorder(carrier_name, delayed_flights),
+           y = delayed_flights)) +
+  geom_col(fill = "darkgreen", color = NA) +
+  labs(title = "Delayed Flights (≥15 min) by Airline (2019–2020)",
+       x = "Airlines",
+       y = "Delayed flights") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  theme(
+    axis.text.x = element_text(vjust = 0.5, hjust = 1),
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "darkgreen", hjust = 0.5),
+    panel.background = element_rect(fill = "#f7fcb9", colour = NA),
+    plot.background  = element_rect(fill = "#addd8e", colour = NA)
+  )+
+  coord_flip()
+
+```
+
+
+## Delayed Flights by State (2019)
+
+The 2019 delay table shows that West Virginia (WV) has the fewest recorded flights delayed by more than 15 minutes, while California has the highest number of delayed flights. Texas ranks second in total delays, followed by Florida in third place.
+
+The U.S. map shades each state according to the total number of flights delayed more than 15 minutes. Darker colors represent more delays, and the results align with the table: California, Texas, and Florida stand out as the states with the greatest number of delays.
+
+When these results are compared with the earlier table of most-visited states, shows a clear pattern: states with more recorded flights, such as California, Texas, and Florida, also tend to have more delays. Likewise, states with relatively few flights in this data set, including Wyoming, West Virginia, and Vermont, show the fewest delays.
+
+```{r}
+#2019 subset for graphing
+subset_map <- clean_airlines %>%
+  filter(year == 2019) %>%
+  group_by(abbr) %>%
+  summarise(carrier_sum = sum(arr_del15, na.rm = TRUE), .groups = "drop") %>%
+  arrange(carrier_sum)  
+
+subset_map
+
+```
+
+
+```{r}
+map_df <- subset_map %>%
+  mutate(abbr = toupper(abbr)) %>%
+  filter(abbr %in% state.abb) %>%                             # drop territories
+  inner_join(usmap::fips_info() %>% select(abbr, fips), by = "abbr") %>%
+  transmute(fips, value = carrier_sum)
+
+
+plot_usmap(data = map_df, values = "value", color = "white") +
+  scale_fill_continuous(low = "#f7fcb9", high = "darkgreen",
+                        name = "Total flights delay (>15')",
+                        labels = scales::comma) +
+  labs(title = "Arrival Delay Minutes by State (2019)") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "darkgreen", hjust = 0.5),
+    panel.background = element_rect(fill = "#9ecae1", colour = NA),
+    plot.background  = element_rect(fill = "#addd8e", colour = NA)
+  )
+```
+
+
+## Delayed Flights by State (2020)
+
+In 2020, Vermont recorded the fewest flights delayed by more than 15 minutes, while Texas recorded the most. Compared with 2019, the overall volume of data per state is much lower, reflecting a substantial reduction in flight activity during 2020. For instance, the state with the fewest delayed flights in 2020 had only 26 records, whereas the minimum in 2019 was 109. Similarly, Texas, this year’s top state, had 6,552 delayed flights, compared with California’s 16,861 delayed flights in 2019.
+
+As in the previous figure, the U.S. map shades states according to the total number of delay minutes from flights arriving more than 15 minutes late. Darker colors indicate more delay minutes, and Texas stands out as the darkest region, signaling the highest total delay. Vermont appears among the lightest states, consistent with its relatively low number of delays.
+
+```{r}
+#2020 subset for graph
+subset2 <- clean_airlines %>%
+  filter(year == 2020) %>%
+  group_by(abbr) %>%
+  summarize(carrier_sum = sum(arr_del15))
+
+
+arrange(subset2, carrier_sum)
+```
+
+
+
+```{r}
+map_df_2020 <- subset2 %>%
+  mutate(abbr = toupper(abbr)) %>%
+  filter(abbr %in% state.abb) %>%                                  
+  inner_join(usmap::fips_info() %>% select(abbr, fips), by = "abbr") %>%
+  transmute(fips, value = carrier_sum)
+
+
+
+plot_usmap(data = map_df_2020, values = "value", color = "white") +
+  scale_fill_continuous(low = "#f7fcb9", high = "#d95f0e",
+                        name = "Total delay (min)",
+                        labels = scales::comma) +
+  labs(title = "Arrival Delay Minutes by State (2020)") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "#d95f0e", hjust = 0.5),
+    panel.background = element_rect(fill = "#9ecae1", colour = NA),
+    plot.background  = element_rect(fill = "#f7fcb9", colour = NA)
+  )
+```
+
+
+## West Virginia — Causes of Delays
+
+Given our earlier findings, it is useful to look more closely at West Virginia’s delay patterns. This state consistently appears among those with the fewest flights overall and the lowest number of delays longer than 15 minutes. Here, delay minutes are measured as the number of minutes past the scheduled time of departure.
+
+
+
+```{r}
+#prepare and filter WV data
+WVdata <- clean_airlines %>%
+  filter(abbr == "WV") %>%
+  summarize(
+    WVcarr_sum = sum(carrier_delay),
+    WVwea_sum = sum(weather_delay),
+    WVnas_sum = sum(nas_delay), 
+    WVsec_sum = sum(security_delay),
+    WVairc_sum = sum(late_aircraft_delay)
+  )
+
+```
+
+
+The pie chart shows the distribution of total delay minutes by cause for West Virginia in 2019–2020. The most common source of delay is the carrier itself, accounting for 43.6% of total delay minutes. Late-arriving aircraft contribute another 30.9% of delay minutes, while weather-related issues represent about 12.8%. NAS and security causes make up only a small share of the total.
+
+
+```{r}
+pieWV <- WVdata %>%
+  pivot_longer(everything(), names_to = "group", values_to = "value") %>%
+  mutate(
+    group = recode(
+      group,
+      WVcarr_sum = "Carrier",
+      WVwea_sum  = "Weather",
+      WVnas_sum  = "NAS",
+      WVsec_sum  = "Security",
+      WVairc_sum = "Late Aircraft"
+    )
+  ) %>%
+  mutate(
+    pct   = value / sum(value),
+    label = paste0(group, " ", scales::percent(pct, accuracy = 0.1))
+  ) %>%
+  arrange(desc(group)) %>%                       # just to fix order
+  mutate(ypos = cumsum(pct) - 0.5 * pct)        # slice midpoints
+
+ggplot(pieWV, aes(x = 1, y = pct, fill = group)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  # labels slightly outside the pie
+  geom_text(aes(x = 1.8, y = ypos, label = label),
+            size = 3.8) +
+  theme_void() +
+  labs(title = "West Virginia — Causes of Delays") +
+  theme(
+    legend.position = "right",                    # remove legend
+    plot.title = element_text(face = "bold", color = "darkgreen", hjust = 0.5),
+    panel.background = element_rect(fill = "#f7fcb9", colour = NA),
+    plot.background  = element_rect(fill = "#addd8e", colour = NA)
+  )
+```
+
+
+### West Virginia Airlines Analysis
+
+Because most of West Virginia’s delay minutes come from carrier-related problems and late aircraft, it is relevant to examine which airlines operate in this state. In this dataset, only six carriers serve West Virginia between 2019 and 2020. The bar chart shows that SkyWest Airlines Inc. leads with 345 on-time arrivals and 69 delayed flights. PSA Airlines Inc., the second-largest carrier in this market, has a similar number of delayed flights despite operating nearly 100 more total flights. This suggests that SkyWest’s delay rate in West Virginia is relatively higher than PSA’s, even though both contribute meaningfully to the state’s overall delay minutes.
+
+```{r}
+
+WVairlines <- clean_airlines %>%
+  filter(abbr == "WV") %>%
+  group_by(carrier_name) %>%
+  summarise(
+    arr_flights = sum(arr_flights, na.rm = TRUE),
+    arr_del15   = sum(arr_del15,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+WVlong <- WVairlines %>%
+  pivot_longer(
+    cols = c(arr_flights, arr_del15),
+    names_to = "Metric",
+    values_to = "value"
+  ) %>%
+  mutate(carrier_name = reorder(carrier_name, value, FUN = sum))
+
+
+ggplot(WVlong, aes(x = carrier_name, y = value, fill = Metric)) +
+  geom_col(position = position_dodge(width = 1), width = 0.75) +
+  geom_text(
+    aes(label = scales::comma(value)),
+    position = position_dodge(width = 1),
+    hjust = -0.3,           
+    nudge_y = 8,             
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.20))   
+  ) +
+  labs(title = "West Virginia — Carrier Analysis",
+       x = "Airlines Carrier",
+       y = "Flights Count") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "darkgreen", hjust = 0.5),
+    panel.background = element_rect(fill = "#f7fcb9", colour = NA),
+    plot.background  = element_rect(fill = "#addd8e", colour = NA),
+    plot.margin = margin(r = 20)           
+  ) +
+  scale_fill_discrete(labels = c(arr_del15 = "Delayed ≥15 min",
+                                 arr_flights = "Arrivals (on-time)")) +
+  coord_flip(clip = "off")
+```
+
+
+## California — Causes of Delays
+
+As with West Virginia, it is useful to look more closely at California, which appears repeatedly in this analysis as one of the states with both the highest traffic and the highest number of delays.
+
+The following pie chart shows the distribution of delay minutes by cause for California in 2019–2020. The largest share of delay minutes comes from late-arriving aircraft (35.7%), which can create a chain reaction of delays at busy airports. Carrier-related problems, such as maintenance, crew issues, or schedule disruptions, account for another 32.2% of delay minutes. NAS-related causes contribute 28.9%, while weather (3.0%) and security (0.2%) make up only a small portion of the total. Taken together, late aircraft and carrier causes represent more than two-thirds of all delay minutes, suggesting that operational factors inside airlines and their networks play a larger role than external conditions in California.
+
+```{r}
+CAdata <- clean_airlines %>%
+  filter(abbr == "CA") %>%
+  summarize(
+    CAcarr_sum = sum(carrier_delay),
+    CAwea_sum = sum(weather_delay),
+    CAnas_sum = sum(nas_delay), 
+    CAsec_sum = sum(security_delay),
+    CAairc_sum = sum(late_aircraft_delay)
+    
+  )
+
+```
+
+```{r}
+pieCA <- CAdata %>%
+  pivot_longer(everything(), names_to = "group", values_to = "value")
+
+```
+
+```{r}
+
+
+pieCA <- pieCA %>%
+  mutate(
+    group = recode(
+      group,
+      CAcarr_sum = "Carrier", 
+      CAwea_sum  = "Weather",
+      CAnas_sum  = "NAS", 
+      CAsec_sum  = "Security",
+      CAairc_sum = "Late Aircraft"
+    ),
+    pct   = value / sum(value),
+    label = paste0(group, " ", scales::percent(pct, accuracy = 0.1))
+  ) %>%
+  arrange(desc(group)) %>%
+  mutate(ypos = cumsum(pct) - 0.5 * pct)
+
+ggplot(pieCA, aes(x = 1, y = pct, fill = group)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text_repel(
+    aes(x = 1.7, y = ypos, label = label),
+    size = 3.8,
+    show.legend = FALSE,
+    nudge_x = 0,
+    segment.size = 0.1
+  ) +
+  theme_void() +
+  labs(title = "California — Causes of Delays") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "#6A1B9A", hjust = 0.5),
+    panel.background = element_rect(fill = "#E1BEE7", colour = NA),
+    plot.background  = element_rect(fill = "#BA68C8", colour = NA)
+  )
+```
+
+### California Airlines Analysis
+
+The bar chart compares the number of on-time flights and flights delayed by at least 15 minutes for major airlines serving California during 2019–2020. Southwest Airlines Co. and SkyWest Airlines Inc. dominate the market in this data set, together accounting for more than half of the recorded flights. Other carriers, including United, American, Delta, Alaska, JetBlue, Spirit, Mesa, and Frontier, also show substantial numbers of both on-time and delayed flights. Overall, the visualization highlights California’s very high traffic volume and suggests that many of its delays are linked to how airlines manage their schedules and fleets, rather than primarily to weather.
+
+```{r}
+
+CAairlines <- clean_airlines %>%
+  filter(abbr == "CA") %>%
+  group_by(carrier_name) %>%
+  summarise(
+    arr_flights = sum(arr_flights, na.rm = TRUE),
+    arr_del15   = sum(arr_del15,   na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(total = arr_flights + arr_del15) %>%
+  slice_max(total, n = 10, with_ties = FALSE)
+
+
+
+CAlong <- CAairlines %>%
+  pivot_longer(
+    cols = c(arr_flights, arr_del15),
+    names_to = "Metric",
+    values_to = "value"
+  ) %>%
+  
+  mutate(carrier_name = reorder(carrier_name, value, FUN = sum))
+
+
+ggplot(CAlong, aes(x = carrier_name, y = value, fill = Metric)) +
+  geom_col(position = position_dodge(width = 1), width = 0.75) +
+  geom_text(
+    aes(label = scales::comma(value)),
+    position = position_dodge(width = 1),
+    hjust = -0.3,            
+    nudge_y = 8,             
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.20))   
+  ) +
+  labs(title = "California — Carrier Analysis",
+       x = "Airlines Carrier",
+       y = "Flights Count") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold", color = "#6A1B9A", hjust = 0.5),
+    panel.background = element_rect(fill = "#F3E5F5", colour = NA),
+    plot.background  = element_rect(fill = "#CE93D8", colour = NA),
+    plot.margin = margin(r = 20)            
+  ) +
+  scale_fill_discrete(labels = c(arr_del15 = "Delayed ≥15 min",
+                                 arr_flights = "Arrivals (on-time)")) +
+  coord_flip(clip = "off")
+```
+
+
+
+## Texas — Causes of Delays
+
+Texas stands out in this study because it ranks at the top for flight delays in 2020. The state hosts major aviation hubs such as Dallas–Fort Worth (DFW) and Houston (IAH), which handle large volumes of passengers and freight. With this constant flow of traffic, bottlenecks are common, and occasional severe storms can make those bottlenecks worse.
+
+The following pie chart shows the distribution of delay minutes by cause in Texas for 2019–2020. The largest share of delay time (42.1%) comes from late-arriving aircraft, indicating that many Texas delays start upstream when a previous flight arrives behind schedule. Carrier-related issues, such as maintenance, crew, or scheduling problems, account for another 33.0% of delay minutes. NAS causes contribute 19.9%, while weather explains only 4.9% and security just 0.2% of total delay time. Even though Texas has a pronounced severe-weather season, most delay minutes in this data set are linked to operational and network factors rather than storms.
+
+
+```{r}
+
+TXdata <- clean_airlines %>%
+  filter(abbr == "TX") %>%
+  summarize(
+    TXcarr_sum = sum(carrier_delay),
+    TXwea_sum = sum(weather_delay),
+    TXnas_sum = sum(nas_delay), 
+    TXsec_sum = sum(security_delay),
+    TXairc_sum = sum(late_aircraft_delay)
+    
+  )
+
+```
+
+```{r}
+pieTX <- TXdata %>%
+  pivot_longer(everything(), names_to = "group", values_to = "value")
+
+```
+
+```{r}
+pieTX <- TXdata %>%
+  tidyr::pivot_longer(everything(), names_to = "group", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(group = recode(group,
+    TXcarr_sum="Carrier", 
+    TXwea_sum="Weather", 
+    TXnas_sum="NAS",
+    TXsec_sum="Security", 
+    TXairc_sum="Late Aircraft"),
+    pct   = value / sum(value),
+    label = paste0(group, " ", scales::percent(pct, accuracy = 0.1))
+  ) %>%
+  arrange(desc(group)) %>%
+  mutate(ypos = cumsum(pct) - 0.5 * pct)
+
+ggplot(pieTX, aes(x = 1, y = pct, fill = group)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text_repel(
+    aes(x = 1.7, y = ypos, label = label),
+    size = 3.8,
+    show.legend = FALSE,
+    nudge_x = 0,
+    segment.size = 0.1
+  ) +
+  theme_void() +
+  labs(title = "Texas — Causes of Delays") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face="bold", color="#d95f0e", hjust=0.5),
+    panel.background = element_rect(fill="#fff7bc", colour=NA),
+    plot.background  = element_rect(fill="#fec44f", colour=NA)
+  )
+```
+### Texas Airlines Analysis
+
+The carrier analysis bar chart compares on-time flights and delays of at least 15 minutes for the major airlines serving Texas. American Airlines, Southwest, Envoy, and Mesa together operate the majority of flights in this state. Smaller or low-cost carriers (such as Spirit, ExpressJet, and Republic) run fewer flights overall but still register noticeable numbers of delays. Taken together, these results emphasize that high traffic volumes at Texas hubs, combined with late aircraft and carrier-related issues, are central drivers of the state’s delay patterns.
+
+```{r}
+
+
+TXairlines <- clean_airlines %>%
+  filter(abbr == "TX") %>%
+  group_by(carrier_name) %>%
+  summarise(
+    arr_flights = sum(arr_flights, na.rm = TRUE),
+    arr_del15   = sum(arr_del15,   na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(total = arr_flights + arr_del15) %>%
+  slice_max(total, n = 10, with_ties = FALSE)
+
+
+
+TXlong <- TXairlines %>%
+  pivot_longer(
+    cols = c(arr_flights, arr_del15),
+    names_to = "Metric",
+    values_to = "value"
+  ) %>%
+  
+  mutate(carrier_name = reorder(carrier_name, value, FUN = sum))
+
+
+ggplot(TXlong, aes(x = carrier_name, y = value, fill = Metric)) +
+  geom_col(position = position_dodge(width = 1), width = 0.75) +
+  geom_text(
+    aes(label = scales::comma(value)),
+    position = position_dodge(width = 1),
+    hjust = -0.3,            
+    nudge_y = 8,             
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.20))   
+  ) +
+  labs(title = "Texas — Carrier Analysis",
+       x = "Airlines Carrier",
+       y = "Flights Count") +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face="bold", color="#d95f0e", hjust=0.5),
+    panel.background = element_rect(fill="#fff7bc", colour=NA),
+    plot.background  = element_rect(fill="#fec44f", colour=NA),
+    plot.margin = margin(r = 20)            
+  ) +
+  scale_fill_discrete(labels = c(arr_del15 = "Delayed ≥15 min",
+                                 arr_flights = "Arrivals (on-time)")) +
+  coord_flip(clip = "off")
+
+```
+
+
+## Results
+
+This analysis used grouped summary statistics and a series of visualizations, circle packing plots, bar charts, U.S. maps, and comparative boxplots, to examine how flight delays vary by airline, state, and cause in 2019–2020. Grouping the data by airline and state made it possible to compare traffic volume and delay counts side by side, while maps and boxplots highlighted geographic patterns and the distribution of delay minutes (including outliers) across locations. Cause-of-delay pie charts for selected states (West Virginia, California, Texas) were used to break total delay minutes into NAS, weather, carrier, late aircraft, and security categories. These methods were chosen because they provide visual comparisons of both scale, like how many flights/delays are there in minutes.
+
+At the state level, the boxplots show a clear gap between the states with the most and least total delay minutes. Among the top-delay states, places with large hub airports such as New Jersey, Massachusetts, and DC have much higher medians and very wide spreads on the log scale, indicating that their airports accumulate more total delay time and that delays are highly variable within those states. In contrast, the bottom-delay states, like West Virginia, Maine, Mississippi, and Vermont have much lower medians and tighter ranges, which would suggest that delay totals are substantially smaller. Another finding suggests that traffic volume and hub status are important drivers of delay but not the only ones; even lower-traffic states can occasionally experience very high total delays at specific airports, while some airports in high-delay states perform relatively better.
+
+The cause-of-delay breakdowns for West Virginia, California, and Texas indicate that late-arriving aircraft and carrier-related issues together account for the majority of delay minutes in all three states. In California and Texas, these two categories make up well over 60% of total delay time, while weather and security contribute only a small share. Even in West Virginia, which has fewer flights and delays overall, most delay minutes still are separate from carrier problems and late aircraft. Comparing 2019 with 2020 shows a substantial drop in total delayed flights and delay minutes in 2020, consistent with a reduction in overall flight activity; however, Texas emerges as the leading state for delays in that year. This suggests that large hub states can remain as high delay areas even when national traffic falls.
+
+## Conclusions
+
+Overall, the analysis suggests that both systemic and operator-specific factors shape U.S. flight delays. States and hubs with heavy traffic naturally accumulate more delayed flights, but the composition of delay causes points toward airline-controlled factors, late aircraft, and carrier operations as the dominant contributors to total delay minutes in this sample. High-volume carriers can differ substantially in how often their flights are delayed, implying that schedule design, turn times, crew management, and fleet utilization all play important roles alongside NAS capacity and weather.
+
+There are, however, several limitations. The data set is a refined subset of the full Department of Transportation records, so the results represent this sample rather than the entire U.S. network. Aggregating delays at the state level hides differences between specific airports within the same state and causes categories to rely on how airlines report delay reasons, which may introduce reporting bias. The project is also descriptive: it identifies patterns and associations but does not estimate causal effects. Future work could extend this analysis by using larger, more complete data sets, the use of probabilities or time series methods.
+
+## References
+
+[Kaggle CVS](https://www.kaggle.com/datasets/eugeniyosetrov/airline-delays) [Bureau of Transportation Statistics Website](https://www.transtats.bts.gov/OT_Delay/OT_DelayCause1.asp?20=E)
+
+ASPMHelp. (n.d.). Definitions of variables – Delay NAS causes; Types of delay.
+
+[Federal Aviation Administration](https://www.aspm.faa.gov/aspmhelp/index/ASQP__Definitions_of_Variables.html)
+
+Airports Council International (ACI) World. [“The Top 10 Busiest Airports in the World Revealed.” 11 Apr. 2022.](https://aci.aero/2022/04/11/the-top-10-busiest-airports-in-the-world-revealed/)
+
+</div>
